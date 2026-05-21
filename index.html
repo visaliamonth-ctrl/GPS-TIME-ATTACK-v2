@@ -89,6 +89,14 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .course-item-name{flex:1;font-size:12px;color:var(--text)}
 .course-item-dist{font-size:11px;color:var(--muted)}
 .course-item-del{font-size:16px;color:var(--muted);background:none;border:none;cursor:pointer;padding:0 2px;line-height:1}
+.course-item-share{font-size:10px;color:var(--accent);background:rgba(0,229,255,0.1);border:1px solid rgba(0,229,255,0.3);border-radius:5px;cursor:pointer;padding:3px 8px;font-family:var(--fb)}
+.history-save-btn{font-size:11px;background:rgba(0,229,255,0.12);border:1px solid rgba(0,229,255,0.35);color:var(--accent);padding:6px 10px;border-radius:7px;cursor:pointer;white-space:nowrap;font-family:var(--fb)}
+#share-modal{position:fixed;inset:0;z-index:998;background:rgba(0,0,0,0.7);display:none;align-items:center;justify-content:center;padding:20px}
+#share-modal.show{display:flex}
+.share-info{font-size:13px;color:var(--text);margin:4px 0 12px;line-height:1.5}
+.share-info-dist{font-family:var(--fd);color:var(--accent);font-weight:700}
+.share-btns-col{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.modal-btn-secondary{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
 .no-courses{padding:14px;text-align:center;font-size:12px;color:var(--muted)}
 
 /* ===== RACE ===== */
@@ -280,7 +288,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   <div class="hdr">
     <div class="hdr-left">
       <div class="hdr-title">TIME ATTACK</div>
-      <div class="hdr-ver">v1.9.5</div>
+      <div class="hdr-ver">v1.9.6</div>
     </div>
     <div class="gps-badge">
       <div class="gps-dot" id="gps-dot"></div>
@@ -482,10 +490,11 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 <div id="history-overlay">
   <div class="history-header">
     <button class="history-back" onclick="closeHistory()">‹</button>
-    <div>
+    <div style="flex:1;min-width:0">
       <div class="history-title" id="history-title">走行記録</div>
       <div class="history-subtitle" id="history-subtitle"></div>
     </div>
+    <button class="history-save-btn" onclick="saveCourseFromHistory()">＋コース保存</button>
   </div>
   <div id="history-map"></div>
   <div class="history-stats">
@@ -531,10 +540,23 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   </div>
 </div>
 
+<!-- SHARED COURSE MODAL -->
+<div id="share-modal">
+  <div class="modal-box">
+    <div class="modal-title">共有コースが見つかりました</div>
+    <div class="share-info" id="share-info"></div>
+    <div class="share-btns-col">
+      <button class="modal-btn modal-ok" onclick="acceptSharedCourse(true)">マイコースに保存して使う</button>
+      <button class="modal-btn modal-btn-secondary" onclick="acceptSharedCourse(false)">今だけ使う（保存しない）</button>
+      <button class="modal-btn modal-cancel" onclick="closeShareModal()">キャンセル</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
 <script>
-const VERSION = 'v1.9.5';
+const VERSION = 'v1.9.6';
 
 // ===== STATE =====
 let map, raceMap, startMarker, goalMarker, routeLayer;
@@ -569,7 +591,145 @@ window.addEventListener('load', () => {
   initGPS();
   renderCourseList();
   if (synth) { synth.getVoices(); synth.addEventListener('voiceschanged', () => synth.getVoices()); }
+  tryLoadSharedCourse();
 });
+
+// ===== SHARE (URL) =====
+function _b64encUtf8(s) {
+  return btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function _b64decUtf8(b) {
+  b = b.replace(/-/g,'+').replace(/_/g,'/');
+  while (b.length % 4) b += '=';
+  return decodeURIComponent(escape(atob(b)));
+}
+function encodeCourse(c) {
+  const compact = {
+    n: c.name || '',
+    s: [+c.startLL.lat.toFixed(6), +c.startLL.lng.toFixed(6)],
+    g: [+c.goalLL.lat.toFixed(6), +c.goalLL.lng.toFixed(6)],
+    d: Math.round(c.distM || 0),
+    t: Math.round(c.durSec || 0),
+    r: (c.routeCoords || []).map(p => [+p[0].toFixed(5), +p[1].toFixed(5)]),
+    rd: c.roadName || ''
+  };
+  return _b64encUtf8(JSON.stringify(compact));
+}
+function decodeCourse(b64) {
+  try {
+    const c = JSON.parse(_b64decUtf8(b64));
+    if (!c.s || !c.g || !Array.isArray(c.r)) return null;
+    return {
+      id: Date.now(),
+      name: c.n || '共有コース',
+      startLL: { lat: c.s[0], lng: c.s[1] },
+      goalLL:  { lat: c.g[0], lng: c.g[1] },
+      distM: c.d || 0,
+      durSec: c.t || 0,
+      routeCoords: c.r,
+      roadName: c.rd || ''
+    };
+  } catch (e) { return null; }
+}
+function shareCourse(i) {
+  const c = savedCourses[i];
+  if (!c) return;
+  const url = location.origin + location.pathname + '#course=' + encodeCourse(c);
+  const shareData = { title: 'GPS Time Attack コース', text: `「${c.name}」(${fmtDist(c.distM)})`, url };
+  if (navigator.share) {
+    navigator.share(shareData).catch(() => {});
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).then(
+      () => alert('共有URLをコピーしました'),
+      () => prompt('共有URL（コピーしてください）', url)
+    );
+  } else {
+    prompt('共有URL（コピーしてください）', url);
+  }
+}
+let pendingSharedCourse = null;
+function tryLoadSharedCourse() {
+  const h = location.hash || '';
+  const m = h.match(/[#&]course=([^&]+)/);
+  if (!m) return;
+  const c = decodeCourse(m[1]);
+  if (!c) { history.replaceState(null, '', location.pathname); return; }
+  pendingSharedCourse = c;
+  document.getElementById('share-info').innerHTML =
+    `<div><b>${c.name}</b></div>` +
+    `<div>距離: <span class="share-info-dist">${fmtDist(c.distM)}</span></div>` +
+    (c.roadName ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${c.roadName}</div>` : '');
+  document.getElementById('share-modal').classList.add('show');
+}
+function acceptSharedCourse(save) {
+  if (!pendingSharedCourse) { closeShareModal(); return; }
+  const c = pendingSharedCourse;
+  if (save) {
+    savedCourses.unshift({ ...c, id: Date.now() });
+    savedCourses = savedCourses.slice(0, 20);
+    localStorage.setItem('ta_courses', JSON.stringify(savedCourses));
+    renderCourseList();
+  }
+  closeShareModal();
+  loadSharedCourseToMap(c);
+  history.replaceState(null, '', location.pathname);
+}
+function loadSharedCourseToMap(c) {
+  resetCourse();
+  startLL = L.latLng(c.startLL.lat, c.startLL.lng);
+  goalLL  = L.latLng(c.goalLL.lat,  c.goalLL.lng);
+  courseDistM  = c.distM;
+  estDurSec    = c.durSec;
+  routeCoords  = c.routeCoords.slice();
+  roadName     = c.roadName || '';
+  straightDistM = haversine(startLL.lat, startLL.lng, goalLL.lat, goalLL.lng);
+  setupStep = 2;
+  if (startMarker) map.removeLayer(startMarker);
+  if (goalMarker)  map.removeLayer(goalMarker);
+  if (routeLayer)  map.removeLayer(routeLayer);
+  startMarker = L.marker(startLL, { icon: makeIcon('#00ff88','S') }).addTo(map);
+  goalMarker  = L.marker(goalLL,  { icon: makeIcon('#ff3d6b','G') }).addTo(map);
+  routeLayer  = L.polyline(routeCoords, { color: '#00e5ff', weight: 5, opacity: 0.85 }).addTo(map);
+  map.fitBounds(routeLayer.getBounds(), { padding: [28, 28] });
+  document.getElementById('start-coords').textContent = startLL.lat.toFixed(5) + '\n' + startLL.lng.toFixed(5);
+  document.getElementById('goal-coords').textContent  = goalLL.lat.toFixed(5)  + '\n' + goalLL.lng.toFixed(5);
+  document.getElementById('route-status').innerHTML = `
+    <div class="route-card">
+      <div class="ri"><div class="ri-label">道路沿い</div><div class="ri-val">${fmtDist(courseDistM)}</div></div>
+      <div class="rdiv"></div>
+      <div class="ri"><div class="ri-label">推定時間</div><div class="ri-val">${fmtDur(estDurSec)}</div></div>
+      <div class="rdiv"></div>
+      <div class="ri"><div class="ri-label">直線距離</div><div class="ri-val">${fmtDist(straightDistM)}</div></div>
+    </div>`;
+  setHint('✅', `共有コース「${c.name}」を読み込みました`, true);
+  document.getElementById('pt-edit-start').style.display = '';
+  document.getElementById('pt-edit-goal').style.display = '';
+  document.getElementById('btn-go').disabled = false;
+  document.getElementById('btn-save').disabled = false;
+}
+function closeShareModal() {
+  document.getElementById('share-modal').classList.remove('show');
+  pendingSharedCourse = null;
+}
+
+// ===== 記録からコースを保存 =====
+function saveCourseFromHistory() {
+  if (!currentHistoryRecord) return;
+  const r = currentHistoryRecord;
+  const track = r.track || [];
+  if (track.length < 2) { alert('トラックデータがないため保存できません'); return; }
+  pendingSaveData = {
+    startLL: { lat: track[0].lat, lng: track[0].lng },
+    goalLL:  { lat: track[track.length-1].lat, lng: track[track.length-1].lng },
+    distM: r.dist || 0,
+    durSec: Math.round((r.time || 0) / 1000),
+    routeCoords: track.map(p => [p.lat, p.lng]),
+    roadName: r.roadName || ''
+  };
+  document.getElementById('course-name-input').value = r.roadName || '';
+  document.getElementById('save-modal').classList.add('show');
+  setTimeout(() => document.getElementById('course-name-input').focus(), 100);
+}
 
 // ===== MAP =====
 function initMap() {
@@ -1545,18 +1705,26 @@ function openSaveModal() {
   document.getElementById('save-modal').classList.add('show');
   setTimeout(() => document.getElementById('course-name-input').focus(), 100);
 }
-function closeSaveModal() { document.getElementById('save-modal').classList.remove('show'); }
+function closeSaveModal() { document.getElementById('save-modal').classList.remove('show'); pendingSaveData = null; }
 
+let pendingSaveData = null;
 function saveCourse() {
   const name = document.getElementById('course-name-input').value.trim() || '無名コース';
-  const course = {
-    id: Date.now(), name,
-    startLL: { lat: startLL.lat, lng: startLL.lng },
-    goalLL: { lat: goalLL.lat, lng: goalLL.lng },
-    distM: courseDistM, durSec: estDurSec,
-    routeCoords: routeCoords.slice(),
-    roadName: roadName
-  };
+  let course;
+  if (pendingSaveData) {
+    course = { id: Date.now(), name, ...pendingSaveData };
+    pendingSaveData = null;
+  } else {
+    if (!courseDistM || !startLL || !goalLL) { closeSaveModal(); return; }
+    course = {
+      id: Date.now(), name,
+      startLL: { lat: startLL.lat, lng: startLL.lng },
+      goalLL: { lat: goalLL.lat, lng: goalLL.lng },
+      distM: courseDistM, durSec: estDurSec,
+      routeCoords: routeCoords.slice(),
+      roadName: roadName
+    };
+  }
   savedCourses.unshift(course);
   savedCourses = savedCourses.slice(0, 20);
   localStorage.setItem('ta_courses', JSON.stringify(savedCourses));
@@ -1571,6 +1739,7 @@ function renderCourseList() {
     <div class="course-item" onclick="loadCourse(${i})">
       <span class="course-item-name">${c.name}</span>
       <span class="course-item-dist">${fmtDist(c.distM)}</span>
+      <button class="course-item-share" onclick="event.stopPropagation();shareCourse(${i})" title="URLで共有">共有</button>
       <button class="course-item-del" onclick="event.stopPropagation();deleteCourse(${i})" title="削除">×</button>
     </div>`).join('');
 }
@@ -1720,10 +1889,12 @@ function stopAmbientBGM() {
 
 // ===== 履歴詳細 =====
 let historyMap = null, historyTrackLayer = null, historyMaxMarker = null;
+let currentHistoryRecord = null;
 
 function openHistory(idx) {
   const r = records[idx];
   if (!r) return;
+  currentHistoryRecord = r;
   document.getElementById('history-overlay').classList.add('show');
   document.getElementById('history-title').textContent = r.roadName || '走行記録';
   document.getElementById('history-subtitle').textContent = r.date + ' ' + (r.recordedAt || '');
