@@ -288,7 +288,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   <div class="hdr">
     <div class="hdr-left">
       <div class="hdr-title">TIME ATTACK</div>
-      <div class="hdr-ver">v1.9.6</div>
+      <div class="hdr-ver">v1.9.7</div>
     </div>
     <div class="gps-badge">
       <div class="gps-dot" id="gps-dot"></div>
@@ -385,11 +385,11 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
         <div class="stats-grid">
           <div class="stat-card">
             <div class="stat-label">現在の速度</div>
-            <div class="stat-value" id="stat-speed">0.0<span class="stat-unit">km/h</span></div>
+            <div class="stat-value" id="stat-speed">0.00<span class="stat-unit">km/h</span></div>
           </div>
           <div class="stat-card">
             <div class="stat-label">最高速度</div>
-            <div class="stat-value" id="stat-max">0.0<span class="stat-unit">km/h</span></div>
+            <div class="stat-value" id="stat-max">0.00<span class="stat-unit">km/h</span></div>
           </div>
           <div class="stat-card">
             <div class="stat-label">移動距離</div>
@@ -401,11 +401,11 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
           </div>
           <div class="stat-card">
             <div class="stat-label">平均速度</div>
-            <div class="stat-value" id="stat-avg">0.0<span class="stat-unit">km/h</span></div>
+            <div class="stat-value" id="stat-avg">0.00<span class="stat-unit">km/h</span></div>
           </div>
           <div class="stat-card">
             <div class="stat-label">経過時間</div>
-            <div class="stat-value" id="stat-elapsed">00:00</div>
+            <div class="stat-value" id="stat-elapsed">00:00.00</div>
           </div>
         </div>
 
@@ -556,7 +556,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
 <script>
-const VERSION = 'v1.9.6';
+const VERSION = 'v1.9.7';
 
 // ===== STATE =====
 let map, raceMap, startMarker, goalMarker, routeLayer;
@@ -577,6 +577,8 @@ let raceMapWatchId = null;
 let startTime = null, elapsedMs = 0;
 let maxSpeed = 0, traveledM = 0;
 let watchId = null, timerRaf = null, minuteTimer = null;
+let lastGpsAt = 0, lastGpsSpeedMs = 0, lastGpsTraveled = 0;
+let displaySpeed = 0, targetSpeed = 0;
 let lastBeepSec = -1, goal500Done = false, goal100Done = false;
 let beepInterval = null;
 
@@ -610,7 +612,6 @@ function encodeCourse(c) {
     g: [+c.goalLL.lat.toFixed(6), +c.goalLL.lng.toFixed(6)],
     d: Math.round(c.distM || 0),
     t: Math.round(c.durSec || 0),
-    r: (c.routeCoords || []).map(p => [+p[0].toFixed(5), +p[1].toFixed(5)]),
     rd: c.roadName || ''
   };
   return _b64encUtf8(JSON.stringify(compact));
@@ -618,7 +619,7 @@ function encodeCourse(c) {
 function decodeCourse(b64) {
   try {
     const c = JSON.parse(_b64decUtf8(b64));
-    if (!c.s || !c.g || !Array.isArray(c.r)) return null;
+    if (!c.s || !c.g) return null;
     return {
       id: Date.now(),
       name: c.n || '共有コース',
@@ -626,7 +627,7 @@ function decodeCourse(b64) {
       goalLL:  { lat: c.g[0], lng: c.g[1] },
       distM: c.d || 0,
       durSec: c.t || 0,
-      routeCoords: c.r,
+      routeCoords: Array.isArray(c.r) ? c.r : null,
       roadName: c.rd || ''
     };
   } catch (e) { return null; }
@@ -661,18 +662,64 @@ function tryLoadSharedCourse() {
     (c.roadName ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${c.roadName}</div>` : '');
   document.getElementById('share-modal').classList.add('show');
 }
-function acceptSharedCourse(save) {
+async function acceptSharedCourse(save) {
   if (!pendingSharedCourse) { closeShareModal(); return; }
   const c = pendingSharedCourse;
+  pendingSharedCourse = null;
+  closeShareModal();
+  history.replaceState(null, '', location.pathname);
+
+  // 旧形式（routeCoords あり）はそのまま読み込み
+  if (c.routeCoords && c.routeCoords.length) {
+    loadSharedCourseToMap(c);
+    if (save) {
+      savedCourses.unshift({ ...c, id: Date.now() });
+      savedCourses = savedCourses.slice(0, 20);
+      localStorage.setItem('ta_courses', JSON.stringify(savedCourses));
+      renderCourseList();
+    }
+    return;
+  }
+
+  // 新形式（短縮URL）: OSRM で再ルーティング
+  resetCourse();
+  startLL = L.latLng(c.startLL.lat, c.startLL.lng);
+  goalLL  = L.latLng(c.goalLL.lat,  c.goalLL.lng);
+  straightDistM = haversine(startLL.lat, startLL.lng, goalLL.lat, goalLL.lng);
+  if (startMarker) map.removeLayer(startMarker);
+  if (goalMarker)  map.removeLayer(goalMarker);
+  startMarker = L.marker(startLL, { icon: makeIcon('#00ff88','S') }).addTo(map);
+  goalMarker  = L.marker(goalLL,  { icon: makeIcon('#ff3d6b','G') }).addTo(map);
+  document.getElementById('start-coords').textContent = startLL.lat.toFixed(5) + '\n' + startLL.lng.toFixed(5);
+  document.getElementById('goal-coords').textContent  = goalLL.lat.toFixed(5)  + '\n' + goalLL.lng.toFixed(5);
+  setHint('⏳', `「${c.name}」のルートを取得中...`, true);
+  setupStep = 2;
+
+  await fetchRoute(startLL, goalLL);
+  if (!routeCoords.length) {
+    setHint('⚠️', 'ルート取得に失敗しました', false);
+    return;
+  }
+
   if (save) {
-    savedCourses.unshift({ ...c, id: Date.now() });
+    const newCourse = {
+      id: Date.now(),
+      name: c.name,
+      startLL: { lat: startLL.lat, lng: startLL.lng },
+      goalLL:  { lat: goalLL.lat,  lng: goalLL.lng },
+      distM: courseDistM,
+      durSec: estDurSec,
+      routeCoords: routeCoords.slice(),
+      roadName: roadName || c.roadName || ''
+    };
+    savedCourses.unshift(newCourse);
     savedCourses = savedCourses.slice(0, 20);
     localStorage.setItem('ta_courses', JSON.stringify(savedCourses));
     renderCourseList();
+    setHint('✅', `「${c.name}」を保存しました`, true);
+  } else {
+    setHint('✅', `「${c.name}」を読み込みました`, true);
   }
-  closeShareModal();
-  loadSharedCourseToMap(c);
-  history.replaceState(null, '', location.pathname);
 }
 function loadSharedCourseToMap(c) {
   resetCourse();
@@ -1443,14 +1490,35 @@ function beginRace() {
     if (!isRacing) return;
     elapsedMs = performance.now() - startTime;
     document.getElementById('timer').textContent = fmtTime(elapsedMs);
-    // 平均速度をリアルタイム更新
-    if (elapsedMs > 0 && traveledM > 0) {
-      const avg = (traveledM / 1000) / (elapsedMs / 3600000);
-      document.getElementById('stat-avg').innerHTML = avg.toFixed(1) + '<span class="stat-unit">km/h</span>';
+    // 直前のGPSフィックスから経過時間で距離を外挿（最大3秒）
+    let liveTraveled = traveledM;
+    if (lastGpsAt > 0) {
+      const dt = (performance.now() - lastGpsAt) / 1000;
+      if (dt < 3 && lastGpsSpeedMs > 0) {
+        liveTraveled = Math.min(courseDistM, lastGpsTraveled + lastGpsSpeedMs * dt);
+      }
     }
-    // 経過時間（分:秒）
-    const em = Math.floor(elapsedMs/60000), es = Math.floor((elapsedMs%60000)/1000);
-    document.getElementById('stat-elapsed').textContent = String(em).padStart(2,'0') + ':' + String(es).padStart(2,'0');
+    // 現在速度を毎フレーム滑らかにイージング（30+fpsで更新）
+    displaySpeed += (targetSpeed - displaySpeed) * 0.18;
+    if (Math.abs(targetSpeed - displaySpeed) < 0.01) displaySpeed = targetSpeed;
+    document.getElementById('stat-speed').innerHTML = displaySpeed.toFixed(2) + '<span class="stat-unit">km/h</span>';
+    document.getElementById('stat-max').innerHTML = maxSpeed.toFixed(2) + '<span class="stat-unit">km/h</span>';
+    // 平均速度（センチ秒精度で更新）
+    if (elapsedMs > 0 && liveTraveled > 0) {
+      const avg = (liveTraveled / 1000) / (elapsedMs / 3600000);
+      document.getElementById('stat-avg').innerHTML = avg.toFixed(2) + '<span class="stat-unit">km/h</span>';
+    }
+    // 移動距離・残り距離・プログレスを毎フレーム更新
+    if (courseDistM > 0) {
+      const pct = Math.min(100, (liveTraveled / courseDistM) * 100);
+      document.getElementById('prog-fill').style.width = pct.toFixed(2) + '%';
+      document.getElementById('pct-label').textContent = Math.round(pct) + '%';
+      document.getElementById('stat-moved').innerHTML = fmtDist(liveTraveled);
+      document.getElementById('stat-remain').innerHTML = fmtDist(Math.max(0, courseDistM - liveTraveled));
+    }
+    // 経過時間（分:秒.センチ秒）
+    const em = Math.floor(elapsedMs/60000), es = Math.floor((elapsedMs%60000)/1000), ec = Math.floor((elapsedMs%1000)/10);
+    document.getElementById('stat-elapsed').textContent = String(em).padStart(2,'0') + ':' + String(es).padStart(2,'0') + '.' + String(ec).padStart(2,'0');
     // 前回タイム比較更新
     if (prevBestTime !== null) {
       const diff = elapsedMs - prevBestTime;
@@ -1475,19 +1543,19 @@ function beginRace() {
   if (navigator.geolocation) {
     watchId = navigator.geolocation.watchPosition(pos => {
       if (!isRacing) return;
-      const spd = pos.coords.speed != null && pos.coords.speed >= 0 ? pos.coords.speed * 3.6 : null;
+      const spdMs = pos.coords.speed != null && pos.coords.speed >= 0 ? pos.coords.speed : null;
+      const spd = spdMs !== null ? spdMs * 3.6 : null;
       if (spd !== null) {
-        document.getElementById('stat-speed').innerHTML = spd.toFixed(1) + '<span class="stat-unit">km/h</span>';
-        if (spd > maxSpeed) { maxSpeed = spd; document.getElementById('stat-max').innerHTML = maxSpeed.toFixed(1) + '<span class="stat-unit">km/h</span>'; }
+        targetSpeed = spd;
+        if (spd > maxSpeed) { maxSpeed = spd; }
       }
       const traveled = nearestProgress(pos.coords.latitude, pos.coords.longitude);
       traveledM = traveled;
-      const pct = Math.min(100, Math.round(traveled / courseDistM * 100));
-      document.getElementById('prog-fill').style.width = pct + '%';
-      document.getElementById('pct-label').textContent = pct + '%';
-      document.getElementById('stat-moved').innerHTML = fmtDist(traveled);
+      // tick() で外挿するための直前値を保存
+      lastGpsAt = performance.now();
+      lastGpsSpeedMs = spdMs != null ? spdMs : 0;
+      lastGpsTraveled = traveled;
       const remain = Math.max(0, courseDistM - traveled);
-      document.getElementById('stat-remain').innerHTML = fmtDist(remain);
       updateGoalAlerts(remain);
 
       // レース中地図：現在地マーカー更新
@@ -1596,8 +1664,8 @@ function showResult(avg) {
   const overlay = document.getElementById('result-overlay');
   overlay.classList.add('show');
   document.getElementById('result-time').textContent = fmtTime(elapsedMs);
-  document.getElementById('result-max').textContent = maxSpeed.toFixed(1) + ' km/h';
-  document.getElementById('result-avg').textContent = avg.toFixed(1) + ' km/h';
+  document.getElementById('result-max').textContent = maxSpeed.toFixed(2) + ' km/h';
+  document.getElementById('result-avg').textContent = avg.toFixed(2) + ' km/h';
   document.getElementById('result-dist').textContent = fmtDist(courseDistM);
   // 順位
   const rank = records.filter(r => Math.abs(r.dist - courseDistM) < 50).findIndex(r => r.time === elapsedMs) + 1;
@@ -1644,18 +1712,20 @@ function resetRace() {
   if (wakeLock) { wakeLock.release().catch(()=>{}); wakeLock = null; }
   if (raceLocMarker) { raceMap && raceMap.removeLayer(raceLocMarker); raceLocMarker = null; }
   goal500Done = false; goal100Done = false; lastBeepSec = -1; elapsedMs = 0; maxSpeed = 0; traveledM = 0;
+  lastGpsAt = 0; lastGpsSpeedMs = 0; lastGpsTraveled = 0;
+  displaySpeed = 0; targetSpeed = 0;
   document.getElementById('timer').textContent = '00:00.00';
   document.getElementById('timer').className = 'timer-display';
   document.getElementById('race-status').textContent = 'スタートボタンを押してレース開始';
   document.getElementById('btn-race').className = 'btn-act start';
   document.getElementById('btn-race').textContent = raceMode === 'rolling' ? 'ROLLING START' : 'START';
   document.getElementById('btn-race').disabled = false;
-  document.getElementById('stat-speed').innerHTML = '0.0<span class="stat-unit">km/h</span>';
-  document.getElementById('stat-max').innerHTML = '0.0<span class="stat-unit">km/h</span>';
+  document.getElementById('stat-speed').innerHTML = '0.00<span class="stat-unit">km/h</span>';
+  document.getElementById('stat-max').innerHTML = '0.00<span class="stat-unit">km/h</span>';
   document.getElementById('stat-moved').innerHTML = '0<span class="stat-unit">m</span>';
   document.getElementById('stat-remain').innerHTML = '—';
-  document.getElementById('stat-avg').innerHTML = '0.0<span class="stat-unit">km/h</span>';
-  document.getElementById('stat-elapsed').textContent = '00:00';
+  document.getElementById('stat-avg').innerHTML = '0.00<span class="stat-unit">km/h</span>';
+  document.getElementById('stat-elapsed').textContent = '00:00.00';
   laps = []; lapStartMs = 0; prevBestTime = null; gpsTrack = [];
   document.getElementById('compare-bar').style.display = 'none';
   document.getElementById('lap-list').innerHTML = '<div style="padding:10px 12px;font-size:12px;color:var(--muted)">レース開始後にLAPボタンで記録</div>';
@@ -1899,8 +1969,8 @@ function openHistory(idx) {
   document.getElementById('history-title').textContent = r.roadName || '走行記録';
   document.getElementById('history-subtitle').textContent = r.date + ' ' + (r.recordedAt || '');
   document.getElementById('hs-time').textContent = fmtTime(r.time);
-  document.getElementById('hs-max').textContent = r.maxSpd.toFixed(1) + ' km/h';
-  document.getElementById('hs-avg').textContent = r.avgSpd.toFixed(1) + ' km/h';
+  document.getElementById('hs-max').textContent = r.maxSpd.toFixed(2) + ' km/h';
+  document.getElementById('hs-avg').textContent = r.avgSpd.toFixed(2) + ' km/h';
   document.getElementById('hs-dist').textContent = fmtDist(r.dist);
   document.getElementById('hs-road').textContent = r.roadName || '—';
   document.getElementById('hs-date').textContent = (r.date || '') + ' ' + (r.recordedAt || '');
