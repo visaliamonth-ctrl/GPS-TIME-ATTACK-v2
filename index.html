@@ -280,7 +280,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   <div class="hdr">
     <div class="hdr-left">
       <div class="hdr-title">TIME ATTACK</div>
-      <div class="hdr-ver">v1.9.4</div>
+      <div class="hdr-ver">v1.9.5</div>
     </div>
     <div class="gps-badge">
       <div class="gps-dot" id="gps-dot"></div>
@@ -534,7 +534,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
 <script>
-const VERSION = 'v1.9.4';
+const VERSION = 'v1.9.5';
 
 // ===== STATE =====
 let map, raceMap, startMarker, goalMarker, routeLayer;
@@ -1178,15 +1178,16 @@ function startCountdown() {
     a1.volume = 0.95;
     let cdStarted = false;
     const triggerCd = () => { if (!cdStarted) { cdStarted = true; doCountdown(); } };
+    const triggerCdAfter1s = () => { if (!cdStarted) setTimeout(triggerCd, 1000); };
 
     const scheduleByDuration = () => {
       const dur = a1.duration;
       if (dur && isFinite(dur) && dur > 5) {
-        // 音声の終わりから3秒前にカウントダウン開始（2秒遅らせた）
-        setTimeout(triggerCd, Math.max(0, (dur - 3.0) * 1000));
+        // 音声終了から1秒後にカウントダウン開始
+        setTimeout(triggerCd, Math.max(0, (dur + 1.0) * 1000));
       } else {
-        // 短い音声や取得失敗時は即開始
-        triggerCd();
+        // 短い音声や取得失敗時は1秒後に開始
+        setTimeout(triggerCd, 1000);
       }
     };
 
@@ -1194,11 +1195,11 @@ function startCountdown() {
       scheduleByDuration();
     } else {
       a1.addEventListener('loadedmetadata', scheduleByDuration, { once: true });
-      // metadataが500ms以内に来なければ即開始
-      setTimeout(() => { if (!cdStarted) triggerCd(); }, 500);
+      // metadataが500ms以内に来なければ1秒後に開始
+      setTimeout(() => { if (!cdStarted) setTimeout(triggerCd, 1000); }, 500);
     }
-    a1.onended = triggerCd; // 音声終了時も念のため
-    a1.play().catch(triggerCd);
+    a1.onended = triggerCdAfter1s; // 音声終了から1秒後（念のため）
+    a1.play().catch(triggerCdAfter1s);
   } else {
     doCountdown();
   }
