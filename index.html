@@ -281,14 +281,49 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .result-btn-again{background:var(--accent);color:#001a20}
 .result-btn-rec{background:var(--surface);border:1px solid var(--border);color:var(--text)}
 
+/* CONSENT OVERLAY */
+#consent-overlay{position:fixed;inset:0;z-index:9999;background:linear-gradient(180deg,#0a0a14 0%,#12121f 100%);display:none;flex-direction:column;align-items:center;justify-content:center;padding:20px;overflow-y:auto}
+#consent-overlay.show{display:flex}
+.consent-box{max-width:380px;width:100%;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px;box-shadow:0 10px 40px rgba(0,0,0,0.6)}
+.consent-icon{font-size:36px;text-align:center;margin-bottom:6px;line-height:1}
+.consent-title{font-family:var(--fd);font-size:22px;font-weight:700;color:var(--red);letter-spacing:1px;text-align:center;margin-bottom:4px}
+.consent-subtitle{font-size:11px;color:var(--muted);text-align:center;margin-bottom:16px;letter-spacing:0.5px}
+.consent-list{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:13px 14px 13px 30px;font-size:13px;line-height:1.7;color:var(--text);list-style:none;margin:0}
+.consent-list li{position:relative;margin:7px 0}
+.consent-list li::before{content:'•';position:absolute;left:-14px;color:var(--accent);font-weight:700}
+.consent-list .em{color:var(--accent);font-weight:500}
+.consent-list .danger{color:var(--red);font-weight:500}
+.consent-btn{width:100%;margin-top:16px;padding:14px;border:none;border-radius:12px;background:var(--accent);color:#001a20;font-family:var(--fd);font-size:17px;font-weight:700;letter-spacing:1px;cursor:pointer;transition:opacity 0.15s}
+.consent-btn:active{opacity:0.75}
+.consent-meta{text-align:center;margin-top:10px;font-size:10px;color:var(--muted);letter-spacing:0.5px}
+
 </style>
 </head>
 <body>
+<!-- CONSENT OVERLAY -->
+<div id="consent-overlay">
+  <div class="consent-box">
+    <div class="consent-icon">⚠️</div>
+    <div class="consent-title">ご利用前に</div>
+    <div class="consent-subtitle">SAFETY NOTICE</div>
+    <ul class="consent-list">
+      <li>本アプリは <span class="em">交通法規を遵守</span> のうえご使用ください</li>
+      <li><span class="danger">運転中の画面操作は禁止</span>です。停車時のみ操作してください</li>
+      <li>公道での速度競争・危険運転は <span class="danger">絶対にしないでください</span></li>
+      <li>サーキット・私有地など、安全な場所での使用を推奨します</li>
+      <li>GPSの精度には限界があり、表示される速度・距離は<span class="em">参考値</span>です</li>
+      <li>本アプリの使用によって生じた事故・損害について、開発者は <span class="danger">一切の責任を負いません</span></li>
+    </ul>
+    <button class="consent-btn" onclick="acceptConsent()">同意して開始</button>
+    <div class="consent-meta">GPS TIME ATTACK <span id="consent-ver"></span></div>
+  </div>
+</div>
+
 <div id="app">
   <div class="hdr">
     <div class="hdr-left">
       <div class="hdr-title">TIME ATTACK</div>
-      <div class="hdr-ver">v1.9.8</div>
+      <div class="hdr-ver">v1.9.9</div>
     </div>
     <div class="gps-badge">
       <div class="gps-dot" id="gps-dot"></div>
@@ -556,7 +591,18 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
 <script>
-const VERSION = 'v1.9.8';
+const VERSION = 'v1.9.9';
+
+function showConsent() {
+  document.getElementById('consent-ver').textContent = VERSION;
+  document.getElementById('consent-overlay').classList.add('show');
+}
+function acceptConsent() {
+  document.getElementById('consent-overlay').classList.remove('show');
+}
+function checkConsent() {
+  showConsent();
+}
 
 // ===== STATE =====
 let map, raceMap, startMarker, goalMarker, routeLayer;
@@ -590,6 +636,7 @@ let savedCourses = JSON.parse(localStorage.getItem('ta_courses') || '[]');
 
 // ===== INIT =====
 window.addEventListener('load', () => {
+  checkConsent();
   initMap();
   initGPS();
   renderCourseList();
@@ -1537,7 +1584,8 @@ function beginRace() {
   if ('wakeLock' in navigator) {
     navigator.wakeLock.request('screen').then(wl => { wakeLock = wl; }).catch(() => {});
   }
-  startAmbientBGM();
+  // BGMは無効化
+  // startAmbientBGM();
   let mins = 0;
   minuteTimer = setInterval(() => { mins++; speakMinute(mins); }, 60000);
 
