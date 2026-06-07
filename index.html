@@ -1872,7 +1872,6 @@ function renderCourseList() {
     <div class="course-item" onclick="loadCourse(${i})">
       <span class="course-item-name">${c.name}</span>
       <span class="course-item-dist">${fmtDist(c.distM)}</span>
-      <button class="course-item-share" onclick="event.stopPropagation();shareCourse(${i})" title="URLで共有">共有</button>
       <button class="course-item-del" onclick="event.stopPropagation();deleteCourse(${i})" title="削除">×</button>
     </div>`).join('');
 }
